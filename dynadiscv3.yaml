@@ -1,0 +1,412 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: Api that allows to sync you discogs collection to DynamoDB, and also allows to search, add, delete a record being this operation performed on both discogs and dynamoDB databases in a serverless way.
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: ferpabloapi
+  CodeKeySync:
+    Type: String
+    Default: sync.zip
+  CodeKeyRecordAdd:
+    Type: String
+    Default: addrecord.zip
+  CodeKeyDelInstance:
+    Type: String
+    Default: delinstance.zip
+  CodeKeyRecordSearch:
+    Type: String
+    Default: searchrecord.zip
+  CodeKeyScanTable:
+    Type: String
+    Default: scantable.zip
+  DDBName:
+    Type: String
+    Default: Records
+  Token:
+    Type: String
+    NoEcho: True
+  User:
+    Type: String
+
+ 
+Resources:
+  DDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DDBName  
+      AttributeDefinitions:
+        -
+          AttributeName: "instance_id"
+          AttributeType: "N"
+        -
+          AttributeName: "band"
+          AttributeType: "S"
+
+      KeySchema:
+        -
+          AttributeName: "instance_id"
+          KeyType: "HASH"
+   
+      ProvisionedThroughput:
+        ReadCapacityUnits: 2
+        WriteCapacityUnits: 2
+
+      GlobalSecondaryIndexes: 
+        - 
+          IndexName: "bandGSI"
+          KeySchema: 
+            - 
+              AttributeName: "band"
+              KeyType: "HASH"
+          
+          Projection: 
+            ProjectionType: "ALL"
+          ProvisionedThroughput: 
+            ReadCapacityUnits: "1"
+            WriteCapacityUnits: "1"
+
+  CloudWatchRole: 
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: Allow
+            Principal: 
+              Service: 
+                - "apigateway.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+
+  Account: 
+    Type: AWS::ApiGateway::Account
+    Properties: 
+      CloudWatchRoleArn: 
+        "Fn::GetAtt": 
+          - CloudWatchRole
+          - Arn 
+
+  MyRestApi:
+    DependsOn: 
+      - Account
+      - DDBTable
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: discsapi
+
+  Deployment:
+    DependsOn: SyncMethod
+    Type: AWS::ApiGateway::Deployment
+    Properties: 
+      RestApiId: !Ref MyRestApi 
+      Description: "My deployment"
+      StageName: Prod
+
+  SyncResource: 
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref MyRestApi
+      ParentId: 
+        Fn::GetAtt: 
+          - MyRestApi
+          - RootResourceId
+      PathPart: "SyncResource"
+
+  RecordAddResource: 
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref MyRestApi
+      ParentId: 
+        Fn::GetAtt: 
+          - MyRestApi
+          - RootResourceId
+      PathPart: "RecordAddResource"
+
+  DelInstanceResource: 
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref MyRestApi
+      ParentId: 
+        Fn::GetAtt: 
+          - MyRestApi
+          - RootResourceId
+      PathPart: "DelInstanceResource"
+
+  RecordSearchResource: 
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref MyRestApi
+      ParentId: 
+        Fn::GetAtt: 
+          - MyRestApi
+          - RootResourceId
+      PathPart: "RecordSearchResource"
+
+  ScanTableResource: 
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      RestApiId: !Ref MyRestApi
+      ParentId: 
+        Fn::GetAtt: 
+          - MyRestApi
+          - RootResourceId
+      PathPart: "ScanTableResource"
+     
+  SyncMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt SyncLambda.Arn
+      ResourceId: !Ref SyncResource
+      RestApiId: !Ref MyRestApi
+
+  ScanTableMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt ScanTableLambda.Arn
+      ResourceId: !Ref ScanTableResource
+      RestApiId: !Ref MyRestApi
+    
+  AddRecordMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt AddRecordLambda.Arn
+      ResourceId: !Ref RecordAddResource
+      RestApiId: !Ref MyRestApi
+      RequestModels:
+        application/json: !Ref ModelRecordAdd
+
+  DelInstanceMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt DelInstanceLambda.Arn
+      ResourceId: !Ref DelInstanceResource
+      RestApiId: !Ref MyRestApi
+      RequestModels:
+        application/json: !Ref ModelDelInstance
+
+  RecordSearchMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt SearchRecordLambda.Arn
+      ResourceId: !Ref RecordSearchResource
+      RestApiId: !Ref MyRestApi
+      RequestModels:
+        application/json: !Ref ModelRecordSearch
+
+  ModelRecordAdd:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: 'application/json'
+      Description: RecordAdd  
+      Name: RecordAdd
+      RestApiId: !Ref MyRestApi
+      Schema:
+        type: object
+        properties:
+          release_id:
+            type: string
+        title: RecordAddModel
+
+  ModelDelInstance:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: 'application/json'
+      Description: DelInstance  
+      Name: DelInstance
+      RestApiId: !Ref MyRestApi
+      Schema:
+        type: object
+        properties:
+          instance_id:
+            type: string
+        title: DelInstanceModel
+
+  ModelRecordSearch:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: 'application/json'
+      Description: RecordSearch
+      Name: RecordSearch
+      RestApiId: !Ref MyRestApi
+      Schema:
+        type: object
+        properties:
+          band_name:
+            type: string
+        title: RecordSearchModel
+
+  SyncLambda:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: sync.lambda_handler
+      Runtime: python3.7
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref CodeKeySync
+      MemorySize: 128
+      Timeout: 100
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Environment:
+        Variables:
+          table: !Ref DDBTable
+          my_token: !Ref Token
+          user: !Ref User
+          curr_region: !Ref "AWS::Region"
+
+  ScanTableLambda:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: scantable.lambda_handler
+      Runtime: python3.7
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref CodeKeyScanTable
+      MemorySize: 128
+      Timeout: 100
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Environment:
+        Variables:
+          table: !Ref DDBTable
+          curr_region: !Ref "AWS::Region"
+
+  AddRecordLambda:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: addrecord.lambda_handler
+      Runtime: python3.7
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref CodeKeyRecordAdd
+      MemorySize: 128
+      Timeout: 100
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Environment:
+        Variables:
+          table: !Ref DDBTable
+          token: !Ref Token
+          user: !Ref User
+          curr_region: !Ref "AWS::Region"
+
+  DelInstanceLambda:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: delinstance.lambda_handler
+      Runtime: python3.7
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref CodeKeyDelInstance
+      MemorySize: 128
+      Timeout: 100
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Environment:
+        Variables:
+          table: !Ref DDBTable
+          token: !Ref Token
+          user: !Ref User
+          curr_region: !Ref "AWS::Region"
+
+  SearchRecordLambda:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: searchrecord.lambda_handler
+      Runtime: python3.7
+      CodeUri: 
+        Bucket: !Ref BucketName
+        Key: !Ref CodeKeyRecordSearch
+      MemorySize: 128
+      Timeout: 100
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Environment:
+        Variables:
+          table: !Ref DDBTable
+          curr_region: !Ref "AWS::Region"
+
+  lambdaApiGatewayInvokeSync:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "SyncLambda.Arn"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MyRestApi}/*/POST/*"
+
+  lambdaApiGatewayScanTable:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "ScanTableLambda.Arn"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MyRestApi}/*/POST/*"
+
+  lambdaApiGatewayInvokeRecordAdd:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "AddRecordLambda.Arn"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MyRestApi}/*/POST/*"
+
+  lambdaApiGatewayInvokeDelInstance:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "DelInstanceLambda.Arn"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MyRestApi}/*/POST/*"
+
+  lambdaApiGatewayRecordSearch:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "SearchRecordLambda.Arn"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MyRestApi}/*/POST/*"
+
+    
+##aws cloudformation deploy --template-file api.yaml --SyncResource-name test1 --region eu-west-1 --capabilities CAPABILITY_IAM
